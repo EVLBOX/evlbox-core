@@ -86,13 +86,13 @@ teardown() {
     rm -rf "$EVLBOX_STACK_DIR"
     run bash "$EVLBOX" status
     [ "$status" -ne 0 ]
-    [[ "$output" == *"No stack found"* ]]
+    [[ "$output" == *"No stack installed"* ]]
 }
 
 @test "status fails when compose.yml is missing" {
     run bash "$EVLBOX" status
     [ "$status" -ne 0 ]
-    [[ "$output" == *"not found"* ]]
+    [[ "$output" == *"No stack installed"* ]]
 }
 
 # ─────────────────────────────────
@@ -101,6 +101,7 @@ teardown() {
 
 @test "setup requires root" {
     touch "${EVLBOX_STACK_DIR}/setup.sh"
+    touch "${EVLBOX_STACK_DIR}/compose.yml"
     run bash "$EVLBOX" setup
     [ "$status" -ne 0 ]
     [[ "$output" == *"root"* ]]
@@ -131,12 +132,14 @@ teardown() {
 # ─────────────────────────────────
 
 @test "backup list shows empty when no backups" {
+    touch "${EVLBOX_STACK_DIR}/compose.yml"
     run bash "$EVLBOX" backup list
     [ "$status" -eq 0 ]
     [[ "$output" == *"No backups"* ]]
 }
 
 @test "backup list works when backup dir is missing" {
+    touch "${EVLBOX_STACK_DIR}/compose.yml"
     rm -rf "$EVLBOX_BACKUP_DIR"
     run bash "$EVLBOX" backup list
     [ "$status" -eq 0 ]

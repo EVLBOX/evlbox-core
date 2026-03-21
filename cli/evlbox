@@ -101,9 +101,12 @@ confirm() {
 # ──────────────────────────────────────────
 
 require_stack() {
-    if [[ ! -d "$STACK_DIR" ]]; then
-        err "No stack found at ${STACK_DIR}"
-        err "Was this VPS provisioned with an EVLBOX stack?"
+    if [[ ! -d "$STACK_DIR" ]] || [[ ! -f "$COMPOSE_FILE" ]]; then
+        err "No stack installed yet."
+        err "EVLBOX Core is ready, but no stack has been deployed to ${STACK_DIR}/"
+        echo ""
+        echo -e "  ${DIM}If you're setting up a new server, your stack's provisioner"
+        echo -e "  will install its files here automatically.${NC}"
         exit 1
     fi
 }
