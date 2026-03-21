@@ -52,7 +52,8 @@ if [[ ! -f /etc/debian_version ]]; then
     exit 1
 fi
 
-if ! curl -fsSL --connect-timeout 5 https://get.docker.com > /dev/null 2>&1; then
+# Check connectivity — use bash built-in since curl/ping may not exist on minimal installs
+if ! bash -c 'exec 3<>/dev/tcp/google.com/80' 2>/dev/null; then
     err "Cannot reach the internet. Check your network connection."
     exit 1
 fi
