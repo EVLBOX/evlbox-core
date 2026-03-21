@@ -1,0 +1,24 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.*
+
+# Test artifacts
+test/tmp/
+
+# AI assistant artifacts — docs live in evlbox/in-a-box-core
+CLAUDE.md
+.claude/
