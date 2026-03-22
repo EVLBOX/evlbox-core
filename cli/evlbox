@@ -499,6 +499,48 @@ cmd_restart() {
     fi
 }
 
+cmd_enable() {
+    require_stack
+    require_root
+    require_docker
+
+    local service="${1:-}"
+    if [[ -z "$service" ]]; then
+        err "Usage: evlbox enable <service>"
+        err "Example: evlbox enable forum"
+        return 1
+    fi
+
+    if [[ -f "${STACK_DIR}/enable.sh" ]]; then
+        bash "${STACK_DIR}/enable.sh" "$service"
+    else
+        err "This stack does not support enable/disable yet."
+        err "Re-run 'evlbox setup' to reconfigure services."
+        return 1
+    fi
+}
+
+cmd_disable() {
+    require_stack
+    require_root
+    require_docker
+
+    local service="${1:-}"
+    if [[ -z "$service" ]]; then
+        err "Usage: evlbox disable <service>"
+        err "Example: evlbox disable forum"
+        return 1
+    fi
+
+    if [[ -f "${STACK_DIR}/disable.sh" ]]; then
+        bash "${STACK_DIR}/disable.sh" "$service"
+    else
+        err "This stack does not support enable/disable yet."
+        err "Re-run 'evlbox setup' to reconfigure services."
+        return 1
+    fi
+}
+
 cmd_secure_ssh() {
     require_root
 
@@ -573,6 +615,8 @@ cmd_help() {
     echo "    backup          Create a backup snapshot"
     echo "    backup list     List available backup snapshots"
     echo "    rollback        Restore from a backup snapshot"
+    echo "    enable <svc>    Enable an optional service"
+    echo "    disable <svc>   Disable an optional service"
     echo "    restart [svc]   Restart all services (or one)"
     echo "    logs [svc]      Tail service logs (or one)"
     echo "    secure-ssh      Disable password auth (requires SSH key first)"
@@ -600,6 +644,8 @@ case "${1:-}" in
     update)         cmd_update ;;
     backup)         shift; cmd_backup "$@" ;;
     rollback)       cmd_rollback ;;
+    enable)         shift; cmd_enable "$@" ;;
+    disable)        shift; cmd_disable "$@" ;;
     restart)        shift; cmd_restart "$@" ;;
     logs)           shift; cmd_logs "$@" ;;
     secure-ssh)     cmd_secure_ssh ;;
