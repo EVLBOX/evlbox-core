@@ -1,5 +1,7 @@
 # evlbox-core
 
+> **⚠️ Work in Progress.** This project is under active development and not yet production-ready. Use at your own risk. EVLBOX provides no warranty, support, or liability for damages arising from use of this software. See [LICENSE](LICENSE).
+
 Shared base layer for [EVLBOX](https://evlbox.com) server deployments.
 
 ## What This Does
@@ -43,7 +45,7 @@ sudo make install
 
 ## License
 
-TBD
+GPL-3.0 — see [LICENSE](LICENSE)
 
 ---
 

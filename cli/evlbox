@@ -9,6 +9,11 @@
 # Contract: the active stack lives at /opt/evlbox/stack/ and provides
 # compose.yml, setup.sh, and backup.sh. This CLI doesn't need to know
 # which stack is installed — it just calls what's there.
+#
+# Multi-compose support: some stacks include upstream projects (e.g., Stoat)
+# that run as separate compose projects. If /opt/evlbox/stack/.compose-projects
+# exists, each line is an absolute path to an additional compose.yml.
+# The CLI iterates over ALL compose projects for status, update, restart, logs.
 
 set -euo pipefail
 
@@ -133,6 +138,43 @@ require_docker() {
 }
 
 # ──────────────────────────────────────────
+# Multi-compose project support
+# ──────────────────────────────────────────
+# Returns an array of compose file paths. The stack's own compose.yml
+# is always first. Additional projects listed in .compose-projects follow.
+
+COMPOSE_PROJECTS=()
+
+load_compose_projects() {
+    COMPOSE_PROJECTS=("$COMPOSE_FILE")
+    local index_file="${STACK_DIR}/.compose-projects"
+    if [[ -f "$index_file" ]]; then
+        while IFS= read -r line; do
+            # Skip comments and blank lines
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            if [[ -f "$line" ]]; then
+                COMPOSE_PROJECTS+=("$line")
+            else
+                warn "Compose project not found (skipping): $line"
+            fi
+        done < "$index_file"
+    fi
+}
+
+# Run a docker compose command against ALL compose projects
+compose_all() {
+    local cmd="$1"; shift
+    for cf in "${COMPOSE_PROJECTS[@]}"; do
+        local project_dir
+        project_dir=$(dirname "$cf")
+        local project_name
+        project_name=$(basename "$project_dir")
+        info "${project_name}:"
+        docker compose -f "$cf" "$cmd" "$@" 2>/dev/null || true
+    done
+}
+
+# ──────────────────────────────────────────
 # Subcommands
 # ──────────────────────────────────────────
 
@@ -140,15 +182,20 @@ cmd_status() {
     require_stack
     require_file "$COMPOSE_FILE"
     require_docker
+    load_compose_projects
 
     print_banner
 
-    # -- Services --
+    # -- Services (all compose projects) --
     header "Services"
-    docker compose -f "$COMPOSE_FILE" ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || {
-        warn "Could not read container status."
-        return 1
-    }
+    for cf in "${COMPOSE_PROJECTS[@]}"; do
+        local project_name
+        project_name=$(basename "$(dirname "$cf")")
+        echo -e "  ${DIM}── ${project_name} ──${NC}"
+        docker compose -f "$cf" ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || {
+            warn "Could not read status for ${project_name}."
+        }
+    done
 
     # -- System --
     header "System"
@@ -224,6 +271,7 @@ cmd_update() {
     require_root
     require_file "$COMPOSE_FILE"
     require_docker
+    load_compose_projects
 
     info "Starting update..."
 
@@ -240,13 +288,17 @@ cmd_update() {
         fi
     fi
 
-    # Step 2: pull new images
+    # Step 2: pull new images (all compose projects)
     info "Pulling latest images..."
-    docker compose -f "$COMPOSE_FILE" pull
+    for cf in "${COMPOSE_PROJECTS[@]}"; do
+        docker compose -f "$cf" pull
+    done
 
-    # Step 3: restart with new images
+    # Step 3: restart with new images (all compose projects)
     info "Restarting services..."
-    docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+    for cf in "${COMPOSE_PROJECTS[@]}"; do
+        docker compose -f "$cf" up -d --remove-orphans
+    done
 
     ok "Update complete."
     echo ""
@@ -305,6 +357,7 @@ cmd_rollback() {
     require_root
     require_file "$COMPOSE_FILE"
     require_docker
+    load_compose_projects
 
     if [[ ! -d "$BACKUP_DIR" ]]; then
         err "No backup directory found."
@@ -365,17 +418,21 @@ cmd_rollback() {
         return 0
     fi
 
-    # Stop services
+    # Stop all compose projects
     info "Stopping services..."
-    docker compose -f "$COMPOSE_FILE" down
+    for cf in "${COMPOSE_PROJECTS[@]}"; do
+        docker compose -f "$cf" down
+    done
 
     # Restore
     info "Restoring from ${selected}..."
     tar -xzf "$backup_path" -C /
 
-    # Restart
+    # Restart all compose projects
     info "Starting services..."
-    docker compose -f "$COMPOSE_FILE" up -d
+    for cf in "${COMPOSE_PROJECTS[@]}"; do
+        docker compose -f "$cf" up -d
+    done
 
     ok "Rollback complete. Restored from ${selected}."
 }
@@ -384,11 +441,29 @@ cmd_logs() {
     require_stack
     require_file "$COMPOSE_FILE"
     require_docker
+    load_compose_projects
 
     if [[ -n "${1:-}" ]]; then
-        docker compose -f "$COMPOSE_FILE" logs -f --tail 50 "$1"
+        # Try each compose project until we find the service
+        local found=false
+        for cf in "${COMPOSE_PROJECTS[@]}"; do
+            if docker compose -f "$cf" ps --format '{{.Service}}' 2>/dev/null | grep -q "^${1}$"; then
+                docker compose -f "$cf" logs -f --tail 50 "$1"
+                found=true
+                break
+            fi
+        done
+        if ! $found; then
+            err "Service '$1' not found in any compose project."
+            return 1
+        fi
     else
-        docker compose -f "$COMPOSE_FILE" logs -f --tail 50
+        # Tail all projects
+        for cf in "${COMPOSE_PROJECTS[@]}"; do
+            docker compose -f "$cf" logs -f --tail 50 &
+        done
+        # Wait for any background job (user will Ctrl+C)
+        wait
     fi
 }
 
@@ -397,14 +472,29 @@ cmd_restart() {
     require_root
     require_file "$COMPOSE_FILE"
     require_docker
+    load_compose_projects
 
     if [[ -n "${1:-}" ]]; then
-        info "Restarting $1..."
-        docker compose -f "$COMPOSE_FILE" restart "$1"
-        ok "$1 restarted."
+        # Find which project owns this service
+        local found=false
+        for cf in "${COMPOSE_PROJECTS[@]}"; do
+            if docker compose -f "$cf" ps --format '{{.Service}}' 2>/dev/null | grep -q "^${1}$"; then
+                info "Restarting $1..."
+                docker compose -f "$cf" restart "$1"
+                ok "$1 restarted."
+                found=true
+                break
+            fi
+        done
+        if ! $found; then
+            err "Service '$1' not found in any compose project."
+            return 1
+        fi
     else
         info "Restarting all services..."
-        docker compose -f "$COMPOSE_FILE" restart
+        for cf in "${COMPOSE_PROJECTS[@]}"; do
+            docker compose -f "$cf" restart
+        done
         ok "All services restarted."
     fi
 }

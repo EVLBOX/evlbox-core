@@ -230,7 +230,8 @@ spin "Starting Diun (update watcher)" \
 # --- evlbox CLI ---
 
 mkdir -p /opt/evlbox/backups
-mkdir -p /opt/evlbox/stack
+# NOTE: Do NOT create /opt/evlbox/stack here — the stack provisioner
+# git clones into that path. Creating it first would cause clone to fail.
 
 # Detect if running from cloned repo or piped via curl
 SCRIPT_DIR=""
