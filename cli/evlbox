@@ -488,12 +488,21 @@ cmd_restart() {
         done
         if ! $found; then
             err "Service '$1' not found in any compose project."
+            info "Running services:"
+            for cf in "${COMPOSE_PROJECTS[@]}"; do
+                docker compose -f "$cf" ps --format '{{.Service}}' 2>/dev/null
+            done | sort | sed 's/^/    /'
             return 1
         fi
     else
+        # Use down + up instead of restart to respect overrides
+        # (e.g., disabled containers stay dead, no port conflicts)
         info "Restarting all services..."
         for cf in "${COMPOSE_PROJECTS[@]}"; do
-            docker compose -f "$cf" restart
+            docker compose -f "$cf" down
+        done
+        for cf in "${COMPOSE_PROJECTS[@]}"; do
+            docker compose -f "$cf" up -d
         done
         ok "All services restarted."
     fi
