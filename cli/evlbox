@@ -238,9 +238,18 @@ cmd_status() {
         warn "Backup directory missing."
     fi
 
+    # -- Infrastructure --
+    header "Infrastructure"
+    local diun_status="not running"
+    if docker ps --filter name=diun --format '{{.Names}}' 2>/dev/null | grep -q diun; then
+        diun_status="running"
+    fi
+    echo -e "  Diun (update watcher): ${diun_status}"
+    echo -e "  Unattended upgrades:   enabled"
+
     # -- Updates --
     header "Updates"
-    if docker ps --filter name=diun --format '{{.Names}}' 2>/dev/null | grep -q diun; then
+    if [[ "$diun_status" == "running" ]]; then
         local update_count
         update_count=$(docker logs diun --since 24h 2>/dev/null | grep -c "New image" || echo 0)
         if (( update_count > 0 )); then
@@ -273,34 +282,93 @@ cmd_update() {
     require_docker
     load_compose_projects
 
-    info "Starting update..."
+    local target="${1:-}"
+    local diun_compose="/opt/evlbox/diun/compose.yml"
 
-    # Step 1: backup first
-    if [[ -f "${STACK_DIR}/backup.sh" ]]; then
-        info "Creating pre-update backup..."
-        bash "${STACK_DIR}/backup.sh"
-        ok "Backup complete."
-    else
-        warn "No backup.sh found — skipping pre-update backup."
-        if ! confirm "Continue without backup?"; then
+    if [[ -n "$target" ]]; then
+        # --- Targeted update: single service ---
+        local found=false
+        local target_compose=""
+        for cf in "${COMPOSE_PROJECTS[@]}"; do
+            if docker compose -f "$cf" ps --format '{{.Service}}' 2>/dev/null | grep -q "^${target}$"; then
+                target_compose="$cf"
+                found=true
+                break
+            fi
+        done
+        if ! $found; then
+            err "Service '$target' not found in any compose project."
+            info "Running services:"
+            for cf in "${COMPOSE_PROJECTS[@]}"; do
+                docker compose -f "$cf" ps --format '{{.Service}}' 2>/dev/null
+            done | sort | sed 's/^/    /'
+            return 1
+        fi
+
+        warn "This will update and restart: $target"
+        if ! confirm "Proceed?"; then
             info "Aborted."
             return 0
         fi
+
+        info "Creating pre-update backup..."
+        if [[ -f "${STACK_DIR}/backup.sh" ]]; then
+            bash "${STACK_DIR}/backup.sh"
+            ok "Backup complete."
+        else
+            warn "No backup.sh found — skipping backup."
+        fi
+
+        info "Pulling latest image for $target..."
+        docker compose -f "$target_compose" pull "$target"
+        info "Restarting $target..."
+        docker compose -f "$target_compose" up -d "$target"
+        ok "$target updated."
+    else
+        # --- Full update: everything ---
+        warn "This will pull the latest container images and restart ALL services."
+        warn "Services will be briefly unavailable during the restart."
+        echo ""
+        if ! confirm "Proceed with full update?"; then
+            info "Aborted."
+            return 0
+        fi
+
+        info "Starting full update..."
+
+        # Step 1: backup first (mandatory)
+        if [[ -f "${STACK_DIR}/backup.sh" ]]; then
+            info "Creating pre-update backup..."
+            bash "${STACK_DIR}/backup.sh"
+            ok "Backup complete."
+        else
+            warn "No backup.sh found — skipping pre-update backup."
+            if ! confirm "Continue without backup?"; then
+                info "Aborted."
+                return 0
+            fi
+        fi
+
+        # Step 2: pull new images (all compose projects + core services)
+        info "Pulling latest images..."
+        for cf in "${COMPOSE_PROJECTS[@]}"; do
+            docker compose -f "$cf" pull
+        done
+        if [[ -f "$diun_compose" ]]; then
+            docker compose -f "$diun_compose" pull
+        fi
+
+        # Step 3: restart with new images (all compose projects)
+        info "Restarting services..."
+        for cf in "${COMPOSE_PROJECTS[@]}"; do
+            docker compose -f "$cf" up -d --remove-orphans
+        done
+        if [[ -f "$diun_compose" ]]; then
+            docker compose -f "$diun_compose" up -d
+        fi
+
+        ok "Update complete."
     fi
-
-    # Step 2: pull new images (all compose projects)
-    info "Pulling latest images..."
-    for cf in "${COMPOSE_PROJECTS[@]}"; do
-        docker compose -f "$cf" pull
-    done
-
-    # Step 3: restart with new images (all compose projects)
-    info "Restarting services..."
-    for cf in "${COMPOSE_PROJECTS[@]}"; do
-        docker compose -f "$cf" up -d --remove-orphans
-    done
-
-    ok "Update complete."
     echo ""
     cmd_status
 }
@@ -620,7 +688,7 @@ cmd_help() {
 
     echo "    status          Show services, system info, and backup status"
     echo "    setup           Run the first-time setup wizard"
-    echo "    update          Pull latest images and restart (backs up first)"
+    echo "    update [svc]    Pull latest images and restart (backs up first)"
     echo "    backup          Create a backup snapshot"
     echo "    backup list     List available backup snapshots"
     echo "    rollback        Restore from a backup snapshot"
@@ -650,7 +718,7 @@ ORIGINAL_ARGS=("$@")
 case "${1:-}" in
     status)         cmd_status ;;
     setup)          cmd_setup ;;
-    update)         cmd_update ;;
+    update)         shift; cmd_update "$@" ;;
     backup)         shift; cmd_backup "$@" ;;
     rollback)       cmd_rollback ;;
     enable)         shift; cmd_enable "$@" ;;
