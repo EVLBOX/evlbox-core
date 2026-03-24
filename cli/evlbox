@@ -250,10 +250,21 @@ cmd_status() {
     # -- Updates --
     header "Updates"
     if [[ "$diun_status" == "running" ]]; then
-        local update_count
-        update_count=$(docker logs diun --since 24h 2>/dev/null | grep -c "New image" || echo 0)
-        if (( update_count > 0 )); then
-            warn "${update_count} image update(s) available — run 'evlbox update'"
+        local -a pending_updates=()
+        while IFS= read -r img; do
+            [[ -n "$img" ]] && pending_updates+=("$img")
+        done < <(docker logs diun --since 24h 2>/dev/null \
+            | grep "New image found" \
+            | sed 's/.*image=\([^ ]*\).*/\1/')
+
+        if (( ${#pending_updates[@]} > 0 )); then
+            warn "${#pending_updates[@]} image update(s) available:"
+            for img in "${pending_updates[@]}"; do
+                echo -e "    ${YELLOW}→${NC} ${img}"
+            done
+            echo ""
+            info "Run 'evlbox update' to update all services."
+            info "Run 'evlbox update <service>' to update one."
         else
             ok "All images up to date (checked in last 24h)"
         fi
@@ -289,13 +300,26 @@ cmd_update() {
         # --- Targeted update: single service ---
         local found=false
         local target_compose=""
-        for cf in "${COMPOSE_PROJECTS[@]}"; do
-            if docker compose -f "$cf" ps --format '{{.Service}}' 2>/dev/null | grep -q "^${target}$"; then
-                target_compose="$cf"
+
+        # Special case: diun is a core service, not in any stack compose project
+        if [[ "$target" == "diun" ]]; then
+            if [[ -f "$diun_compose" ]]; then
+                target_compose="$diun_compose"
                 found=true
-                break
+            else
+                err "Diun compose file not found: ${diun_compose}"
+                return 1
             fi
-        done
+        else
+            for cf in "${COMPOSE_PROJECTS[@]}"; do
+                if docker compose -f "$cf" ps --format '{{.Service}}' 2>/dev/null | grep -q "^${target}$"; then
+                    target_compose="$cf"
+                    found=true
+                    break
+                fi
+            done
+        fi
+
         if ! $found; then
             err "Service '$target' not found in any compose project."
             info "Running services:"
@@ -325,7 +349,53 @@ cmd_update() {
         docker compose -f "$target_compose" up -d "$target"
         ok "$target updated."
     else
-        # --- Full update: everything ---
+        # --- Full update: everything (or pick one with gum) ---
+
+        # If gum is available, offer a choice between updating all vs picking a service
+        if $HAS_GUM; then
+            local update_scope
+            update_scope=$(gum choose \
+                --header "What would you like to update?" \
+                --header.foreground "$BRAND_CYAN" \
+                --cursor.foreground "$BRAND_CYAN" \
+                "All services" \
+                "Pick a service") || {
+                info "Aborted."
+                return 0
+            }
+
+            if [[ "$update_scope" == "Pick a service" ]]; then
+                # Collect all running service names across all compose projects
+                local -a all_services=()
+                for cf in "${COMPOSE_PROJECTS[@]}"; do
+                    while IFS= read -r svc; do
+                        [[ -n "$svc" ]] && all_services+=("$svc")
+                    done < <(docker compose -f "$cf" ps --format '{{.Service}}' 2>/dev/null)
+                done
+                if [[ -f "$diun_compose" ]]; then
+                    all_services+=("diun")
+                fi
+
+                if [[ ${#all_services[@]} -eq 0 ]]; then
+                    warn "No running services found."
+                    return 0
+                fi
+
+                local chosen
+                chosen=$(printf '%s\n' "${all_services[@]}" | gum choose \
+                    --header "Select service to update:" \
+                    --header.foreground "$BRAND_CYAN" \
+                    --cursor.foreground "$BRAND_CYAN") || {
+                    info "No selection made. Aborted."
+                    return 0
+                }
+
+                # Delegate to targeted update
+                cmd_update "$chosen"
+                return $?
+            fi
+        fi
+
         warn "This will pull the latest container images and restart ALL services."
         warn "Services will be briefly unavailable during the restart."
         echo ""
