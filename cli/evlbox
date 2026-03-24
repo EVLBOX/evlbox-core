@@ -550,10 +550,38 @@ cmd_rollback() {
         return 1
     fi
 
-    warn "This will stop all services and restore from: ${selected}"
+    # Require restore.sh — rollback is stack-specific (databases, volumes)
+    if [[ ! -f "${STACK_DIR}/restore.sh" ]]; then
+        err "This stack does not have a restore.sh — cannot perform automatic rollback."
+        info "To restore manually:"
+        info "  1. Extract: tar -xzf ${backup_path} -C /tmp/"
+        info "  2. See your stack documentation for restore steps."
+        return 1
+    fi
+
+    warn "This will STOP ALL SERVICES and restore data from: ${selected}"
+    warn "All current data will be REPLACED. This cannot be undone."
+    echo ""
     if ! confirm "Proceed with rollback?"; then
         info "Aborted."
         return 0
+    fi
+
+    # Extract backup to a temp directory
+    local restore_tmp
+    restore_tmp=$(mktemp -d /tmp/evlbox-restore-XXXXXX)
+    # Always clean up temp dir on exit
+    trap 'rm -rf "$restore_tmp"' RETURN
+
+    info "Extracting backup..."
+    tar -xzf "$backup_path" -C "$restore_tmp"
+
+    # Backup archive contains a single top-level directory
+    local restore_dir
+    restore_dir=$(find "$restore_tmp" -mindepth 1 -maxdepth 1 -type d | head -1)
+    if [[ -z "$restore_dir" ]]; then
+        err "Backup archive appears malformed — no directory found inside."
+        return 1
     fi
 
     # Stop all compose projects
@@ -562,17 +590,24 @@ cmd_rollback() {
         docker compose -f "$cf" down
     done
 
-    # Restore
-    info "Restoring from ${selected}..."
-    tar -xzf "$backup_path" -C /
+    # Delegate data restore to the stack's restore.sh
+    # restore.sh may start database containers temporarily during restore.
+    # cmd_update will bring everything up fully after.
+    info "Restoring data..."
+    bash "${STACK_DIR}/restore.sh" "$restore_dir"
 
-    # Restart all compose projects
+    # Bring everything back up
     info "Starting services..."
     for cf in "${COMPOSE_PROJECTS[@]}"; do
         docker compose -f "$cf" up -d
     done
 
-    ok "Rollback complete. Restored from ${selected}."
+    ok "Rollback complete. Data restored from ${selected}."
+    echo ""
+    warn "Note: Docker images are still at their updated versions."
+    warn "If the image itself caused the breakage, the old image may still"
+    warn "be available as a dangling image. Check with:"
+    warn "  docker images --filter 'dangling=true'"
 }
 
 cmd_logs() {
